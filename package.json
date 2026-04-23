@@ -1,0 +1,35 @@
+{
+  "name": "spinal-organ-cnp-ticket-report",
+  "version": "1.0.0",
+  "description": "Organ that handles CNP ticket reports",
+  "main": "index.js",
+  "scripts": {
+    "start": "node dist/src/index.js",
+    "build": "rm -rf dist declarations && tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cron": "^3.1.6",
+    "dotenv": "^17.2.3",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^7.0.12"
+  },
+  "devDependencies": {
+    "@types/node": "^18.11.18",
+    "typescript": "^4.9.5"
+  },
+  "spinalDependencies": {
+    "spinal-core-connectorjs": "spinal-core-connectorjs",
+    "spinal-core-connectorjs_type": "spinal-core-connectorjs_type",
+    "spinal-env-viewer-graph-service": "Spinal-Graph-Service",
+    "spinal-env-viewer-plugin-documentation-service": "spinal-env-viewer-plugin-documentation-service",
+    "spinal-model-graph": "spinal-model-graph",
+    "spinal-service-ticket": "spinal-service-ticket",
+    "spinal-service-mailer": "spinal-service-mailer",
+    "spinal-service-excel-filler": "spinal-service-excel-filler",
+    "spinal-model-timeseries": "spinal-model-timeseries"
+  }
+}
