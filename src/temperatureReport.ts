@@ -1,9 +1,8 @@
 import { SpinalNode } from 'spinal-env-viewer-graph-service';
-import { SpinalExcelFiller } from "spinal-service-excel-filler";
-import templateCellMap from "../templateCellMap.json";
+import { SpinalExcelFiller, CellValueOrEntry } from "spinal-service-excel-filler";
 import * as path from "path";
 import { existsSync } from "fs";
-import { getColorFromValue, parseAttrValue, getWeekDays } from './utils';
+import { getColorFromValue, parseAttrValue, ROOM_NAME_TO_TOKEN } from './utils';
 import { serviceDocumentation } from 'spinal-env-viewer-plugin-documentation-service';
 import type { SpinalMain } from './index';
 
@@ -14,6 +13,10 @@ export interface MulticapteurEntry {
 
 // floor -> zone letter (A|B|C|D) -> list of multicapteur entries
 export type FloorZoneMap = Record<string, Record<string, MulticapteurEntry[]>>;
+
+const FLOORS = ['01', '02', '03', '04', '05', '06', '07'];
+const ZONES = ['A', 'B', 'C', 'D'];
+const PROD_SHEET = 'Production';
 
 
 async function processMulticapteur(multicapteur: SpinalNode): Promise<{ floor: string; zoneLetter: string; entry: MulticapteurEntry } | null> {
@@ -75,108 +78,159 @@ export async function buildFloorZoneMap(spinalMain: SpinalMain): Promise<FloorZo
 }
 
 
-export async function generateDayTempReport(
-    spinalMain: SpinalMain,
-    floorZoneMap: FloorZoneMap,
-    day: Date
-): Promise<Record<string, { value: number | string; color?: string }>> {
-    const cellMap = templateCellMap as Record<string, string>;
-    const sheetName = process.env.EXCEL_FILE_SHEET_NAME || "Sheet1";
-    const cellData: Record<string, { value: number | string; color?: string }> = {};
-
-    const setCell = (key: string, value: number | string, color?: string) => {
-        const cellRef = cellMap[key];
-        if (!cellRef) return;
-        const cellCode = `${sheetName}!${cellRef}`;
-        cellData[cellCode] = color ? { value, color } : { value };
-    };
-
-    // Fill date/hour metadata
-    const dateStr = day.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' });
-    setCell('morningDate', dateStr);
-    setCell('eveningDate', dateStr);
-    setCell('morningHour', '08:00');
-    setCell('eveningHour', '13:30');
-
-    // Morning = 8:00 AM, Evening = 1:30 PM
-    const morningTime = new Date(day);
-    morningTime.setHours(8, 0, 0, 0);
-    const eveningTime = new Date(day);
-    eveningTime.setHours(13, 30, 0, 0);
-
-    const periods: { name: string; timestamp: number }[] = [
-        { name: 'morning', timestamp: morningTime.getTime() },
-        { name: 'evening', timestamp: eveningTime.getTime() },
-    ];
-
-    for (const { name: period, timestamp } of periods) {
-        // Fill outside temperature and hygrometry
-        const outsideTemp = await spinalMain.getEndpointValueAtTime(spinalMain.outsideTempEndpoint!, timestamp);
-        if (outsideTemp !== null) {
-            setCell(`${period}OutsideTemp`, Math.round(outsideTemp * 10) / 10);
-        }
-        const hygrometry = await spinalMain.getEndpointValueAtTime(spinalMain.hygrometryEndpoint!, timestamp);
-        if (hygrometry !== null) {
-            setCell(`${period}Hygrometry`, Math.round(hygrometry * 10) / 10);
-        }
-
-        for (const [floor, zones] of Object.entries(floorZoneMap)) {
-            const floorNum = parseInt(floor, 10);
-            for (const [zone, entries] of Object.entries(zones)) {
-                const values: number[] = [];
-                for (const entry of entries) {
-                    const val = await spinalMain.getEndpointValueAtTime(entry.bmsEndpointNode, timestamp);
-                    if (val !== null) values.push(val);
-                }
-                console.log(`  ${period} Floor ${floor} Zone ${zone}: ${values.length}/${entries.length} endpoints returned data`);
-                if (values.length === 0) continue;
-
-                const max = Math.max(...values);
-                const min = Math.min(...values);
-                const avg = values.reduce((a, b) => a + b, 0) / values.length;
-                const roundedMax = Math.round(max * 10) / 10;
-                const roundedMin = Math.round(min * 10) / 10;
-                const roundedAvg = Math.round(avg * 10) / 10;
-
-                setCell(`${period}MaxTempR${floorNum}_${zone}`, roundedMax, getColorFromValue(roundedMax));
-                setCell(`${period}AverageTempR${floorNum}_${zone}`, roundedAvg, getColorFromValue(roundedAvg));
-                setCell(`${period}MinTempR${floorNum}_${zone}`, roundedMin, getColorFromValue(roundedMin));
+/**
+ * Build a lookup from multicapteur node name to its BmsEndpoint node,
+ * using all entries in the FloorZoneMap.
+ */
+function buildMulticapteurLookup(floorZoneMap: FloorZoneMap): Map<string, SpinalNode> {
+    const lookup = new Map<string, SpinalNode>();
+    for (const zones of Object.values(floorZoneMap)) {
+        for (const entries of Object.values(zones)) {
+            for (const entry of entries) {
+                lookup.set(entry.multicapteurNode.getName().get(), entry.bmsEndpointNode);
             }
         }
     }
-
-    return cellData;
+    return lookup;
 }
 
 
-export async function generateWeeklyTempReports(spinalMain: SpinalMain): Promise<string[]> {
-    const floorZoneMap = await buildFloorZoneMap(spinalMain);
-    const now = new Date();
-    const weekDays = getWeekDays(now);
-
-    const templatePath = path.resolve(process.cwd(), process.env.EXCEL_FILE_NAME!);
+/**
+ * Generate a single temperature report file for the given period (morning or evening).
+ * Uses the Template sheet tokens to discover cell positions, then fills the Production sheet.
+ */
+export async function generateTempReport(
+    spinalMain: SpinalMain,
+    floorZoneMap: FloorZoneMap,
+    period: 'morning' | 'evening',
+    day?: Date
+): Promise<string> {
+    const reportDay = day || new Date();
+    const templatePath = path.resolve(process.cwd(), 'templates', process.env.EXCEL_FILE_NAME!);
     if (!existsSync(templatePath)) {
         throw new Error(`Template file not found: ${templatePath}`);
     }
 
-    const outputPaths: string[] = [];
+    const filler = new SpinalExcelFiller();
+    await filler.loadTemplate(templatePath);
 
-    for (const day of weekDays) {
-        const dayLabel = day.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' }).replace(/\//g, '-');
-        console.log(`Generating temp report for ${dayLabel}...`);
+    // Discover token positions from Template sheet, map to Production sheet
+    const varLocations = filler.getVariableLocations();
+    const toProd = (ref: string) => ref.replace('Template!', `${PROD_SHEET}!`);
 
-        const cellData = await generateDayTempReport(spinalMain, floorZoneMap, day);
+    // --- Metadata via token locations ---
+    const ampm = period === 'morning' ? 'AM' : 'PM';
+    const ampmCells: Record<string, CellValueOrEntry> = {};
+    for (const loc of varLocations['AM_PM']) {
+        ampmCells[toProd(loc)] = ampm;
+    }
+    filler.setCells(ampmCells);
 
-        const filler = new SpinalExcelFiller();
-        await filler.loadTemplate(templatePath);
-        filler.setCells(cellData);
+    const dateStr = reportDay.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    const timeStr = period === 'morning' ? '08:30' : '13:30';
+    filler.setCells({
+        [toProd(varLocations['date_day'][0])]: dateStr,
+        [toProd(varLocations['date_hour'][0])]: timeStr,
+    });
 
-        const outputPath = path.resolve(process.cwd(), `Relevé T° ${dayLabel}.xlsx`);
-        await filler.save(outputPath);
-        outputPaths.push(outputPath);
-
-        console.log(`Report saved: ${outputPath}`);
+    // --- Determine query timestamp ---
+    const ts = new Date(reportDay);
+    if (period === 'morning') {
+        ts.setHours(8, 0, 0, 0);
+    } else {
+        ts.setHours(13, 30, 0, 0);
     }
 
-    return outputPaths;
+    // --- Outside temperature & hygrometry (embedded tokens → formatted string) ---
+    const outsideTemp = await spinalMain.getEndpointValueAtTime(spinalMain.outsideTempEndpoint!, ts.getTime());
+    const hygrometry = await spinalMain.getEndpointValueAtTime(spinalMain.hygrometryEndpoint!, ts.getTime());
+
+    const extTempCell = toProd(varLocations['EXT_TEMP'][0]);
+    const extHygrCell = toProd(varLocations['EXT_HYGR'][0]);
+
+    filler.setCells({
+        [extTempCell]: outsideTemp !== null ? `T°: ${Math.round(outsideTemp * 10) / 10}°c` : 'T°: N/A',
+        [extHygrCell]: hygrometry !== null ? `HYGR: ${Math.round(hygrometry * 10) / 10}` : 'HYGR: N/A',
+    });
+
+    // --- Zone temperature data (fill 7 floors downward from row 11) ---
+    for (const zone of ZONES) {
+        const maxValues: CellValueOrEntry[] = [];
+        const avgValues: CellValueOrEntry[] = [];
+        const minValues: CellValueOrEntry[] = [];
+
+        for (const floor of FLOORS) {
+            const entries = floorZoneMap[floor]?.[zone] || [];
+            const values: number[] = [];
+            for (const entry of entries) {
+                const val = await spinalMain.getEndpointValueAtTime(entry.bmsEndpointNode, ts.getTime());
+                if (val !== null) values.push(val);
+            }
+            console.log(`  ${period} Floor ${floor} Zone ${zone}: ${values.length}/${entries.length} values`);
+
+            if (values.length === 0) {
+                maxValues.push('');
+                avgValues.push('');
+                minValues.push('');
+            } else {
+                const max = Math.round(Math.max(...values) * 10) / 10;
+                const min = Math.round(Math.min(...values) * 10) / 10;
+                const avg = Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10;
+
+                maxValues.push({ value: max, color: getColorFromValue(max) });
+                avgValues.push({ value: avg, color: getColorFromValue(avg) });
+                minValues.push({ value: min, color: getColorFromValue(min) });
+            }
+        }
+
+        filler.setRange(toProd(varLocations[`MAX_${zone}`][0]), maxValues);
+        filler.setRange(toProd(varLocations[`AVG_${zone}`][0]), avgValues);
+        filler.setRange(toProd(varLocations[`MIN_${zone}`][0]), minValues);
+    }
+
+    // --- Special rooms (ICV) ---
+    const mcLookup = buildMulticapteurLookup(floorZoneMap);
+    const specialGroup = await spinalMain.getSpecialRoomsGroup();
+    const rooms = await specialGroup.getChildren('groupHasgeographicRoom');
+
+    for (const room of rooms) {
+        const roomName = room.getName().get();
+        const token = ROOM_NAME_TO_TOKEN[roomName];
+        if (!token) {
+            console.warn(`Special room "${roomName}" has no token mapping. Skipping.`);
+            continue;
+        }
+        if (!varLocations[token]) {
+            console.warn(`Token "${token}" not found in template. Skipping room "${roomName}".`);
+            continue;
+        }
+
+        const bimObjects = await room.getChildren('hasBimObject');
+        const values: number[] = [];
+        for (const bimObj of bimObjects) {
+            const bmsEndpoint = mcLookup.get(bimObj.getName().get());
+            if (!bmsEndpoint) continue;
+            const val = await spinalMain.getEndpointValueAtTime(bmsEndpoint, ts.getTime());
+            if (val !== null) values.push(val);
+        }
+
+        if (values.length > 0) {
+            const avg = Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10;
+            filler.setCells({ [toProd(varLocations[token][0])]: avg });
+            console.log(`  Special room "${roomName}" (${token}): avg=${avg} from ${values.length} multicapteur(s)`);
+        } else {
+            filler.setCells({ [toProd(varLocations[token][0])]: 'NAN' });
+            console.warn(`  Special room "${roomName}" (${token}): no data, set NAN`);
+        }
+    }
+
+    // --- Save ---
+    filler.deleteSheet('Template');
+    const dayLabel = reportDay.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' }).replace(/\//g, '-');
+    const periodLabel = period === 'morning' ? 'Matin' : 'Soir';
+    const outputPath = path.resolve(process.cwd(), 'prod', `Relevé T° ${dayLabel} ${periodLabel}.xlsx`);
+    await filler.save(outputPath);
+    console.log(`Temp report saved: ${outputPath}`);
+
+    return outputPath;
 }

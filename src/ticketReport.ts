@@ -1,9 +1,10 @@
 import { SpinalExcelFiller } from "spinal-service-excel-filler";
-import templateTicketCellMap from "../templateTicketCellMap.json";
 import * as path from "path";
 import { existsSync } from "fs";
 import type { SpinalMain } from './index';
-import type { TicketCountMap } from './utils';
+import { PROCESS_NAME_TO_TOKEN, MLT_PROCESSES, MLS_PROCESSES, STATUS_ORDER } from './utils';
+
+const PROD_SHEET = 'Production';
 
 
 /**
@@ -32,59 +33,63 @@ export async function generateWeeklyTicketReport(spinalMain: SpinalMain, referen
 
     const ticketCountMap = await spinalMain.initTicketMap(weekStart, weekEnd);
 
-    const cellMap = templateTicketCellMap as Record<string, string>;
-    const sheetName = process.env.TICKET_EXCEL_SHEET_NAME || "Feuille 1";
-    const cellData: Record<string, { value: number | string }> = {};
-
-    const setCell = (key: string, value: number | string) => {
-        const cellRef = cellMap[key];
-        if (!cellRef) return;
-        cellData[`${sheetName}!${cellRef}`] = { value };
-    };
-
-    // Date range header
-    const fmt = (d: Date) => d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    setCell('dateRange', `${fmt(weekStart)} 19:00:00 --> ${fmt(weekEnd)} 19:00:00`);
-
-    let mltTotal = 0;
-    let mlsTotal = 0;
-
-    for (const [processKey, statuses] of Object.entries(ticketCountMap)) {
-        const attente = statuses.attente || 0;
-        const cloturee = statuses.cloturee || 0;
-        const realisationPartielle = statuses.realisationPartielle || 0;
-        const refusee = statuses.refusee || 0;
-        const total = attente + cloturee + realisationPartielle + refusee;
-
-        setCell(`${processKey}_attente`, attente);
-        setCell(`${processKey}_cloturee`, cloturee);
-        setCell(`${processKey}_realisationPartielle`, realisationPartielle);
-        setCell(`${processKey}_refusee`, refusee);
-        setCell(`${processKey}_total`, total);
-
-        if (processKey.startsWith('mlt_')) {
-            mltTotal += total;
-        } else if (processKey.startsWith('mls_')) {
-            mlsTotal += total;
-        }
-    }
-
-    setCell('mlt_total', mltTotal);
-    setCell('mls_total', mlsTotal);
-    setCell('totalGeneral', mltTotal + mlsTotal);
-
-    // Save
-    const templatePath = path.resolve(process.cwd(), process.env.TICKET_EXCEL_FILE_NAME!);
+    const templatePath = path.resolve(process.cwd(), 'templates', process.env.TICKET_EXCEL_FILE_NAME!);
     if (!existsSync(templatePath)) {
         throw new Error(`Ticket template file not found: ${templatePath}`);
     }
 
     const filler = new SpinalExcelFiller();
     await filler.loadTemplate(templatePath);
-    filler.setCells(cellData);
 
+    const varLocations = filler.getVariableLocations();
+    const toProd = (ref: string) => ref.replace('Template!', `${PROD_SHEET}!`);
+
+    // Date range header (embedded tokens Date1/Date2 in A1 & B1)
+    const fmt = (d: Date) => d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const dateStart = `${fmt(weekStart)} 19:00:00`;
+    const dateEnd = `${fmt(weekEnd)} 19:00:00`;
+    // A1 and B1 both contain "Du {{Date1}} au {{Date2}}" — set formatted string on Production
+    const dateStr = `Du ${dateStart} au ${dateEnd}`;
+    for (const loc of varLocations['Date1']) {
+        filler.setCells({ [toProd(loc)]: dateStr });
+    }
+
+    // Fill each process row using token locations
+    let mltTotal = 0;
+    let mlsTotal = 0;
+
+    for (const [processName, tokenName] of Object.entries(PROCESS_NAME_TO_TOKEN)) {
+        const locs = varLocations[tokenName];
+        if (!locs || locs.length === 0) {
+            console.warn(`Token "${tokenName}" not found in ticket template. Skipping process "${processName}".`);
+            continue;
+        }
+
+        const statuses = ticketCountMap[processName] || {};
+        const counts = STATUS_ORDER.map((s) => statuses[s] || 0);
+        const total = counts.reduce((a, b) => a + b, 0);
+
+        // Token is at column C; fill C-H (5 statuses + total) rightward
+        filler.setRange(toProd(locs[0]), [...counts, total], { direction: 'row' });
+
+        if (MLT_PROCESSES.includes(processName)) {
+            mltTotal += total;
+        } else if (MLS_PROCESSES.includes(processName)) {
+            mlsTotal += total;
+        }
+    }
+
+    // Totals via token locations
+    filler.setCells({
+        [toProd(varLocations['MLT_TOTAL'][0])]: mltTotal,
+        [toProd(varLocations['MLS_TOTAL'][0])]: mlsTotal,
+        [toProd(varLocations['TOTAL'][0])]: mltTotal + mlsTotal,
+    });
+
+    // Save
+    filler.deleteSheet('Template');
     const fmtFile = (d: Date) => d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' }).replace(/\//g, '-');
-    const outputPath = path.resolve(process.cwd(), `Tickets CNP ${fmtFile(weekStart)}_${fmtFile(weekEnd)}.xlsx`);
+    const outputPath = path.resolve(process.cwd(), 'prod', `Tickets CNP ${fmtFile(weekStart)}_${fmtFile(weekEnd)}.xlsx`);
     await filler.save(outputPath);
     console.log(`Ticket report saved: ${outputPath}`);
 

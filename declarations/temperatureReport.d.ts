@@ -6,8 +6,4 @@ export interface MulticapteurEntry {
 }
 export type FloorZoneMap = Record<string, Record<string, MulticapteurEntry[]>>;
 export declare function buildFloorZoneMap(spinalMain: SpinalMain): Promise<FloorZoneMap>;
-export declare function generateDayTempReport(spinalMain: SpinalMain, floorZoneMap: FloorZoneMap, day: Date): Promise<Record<string, {
-    value: number | string;
-    color?: string;
-}>>;
-export declare function generateWeeklyTempReports(spinalMain: SpinalMain): Promise<string[]>;
+export declare function generateTempReport(spinalMain: SpinalMain, floorZoneMap: FloorZoneMap, period: 'morning' | 'evening', day?: Date): Promise<string>;

@@ -3,11 +3,11 @@ import { SpinalNode } from 'spinal-env-viewer-graph-service';
 import { SpinalDateValue, SpinalServiceTimeseries, TimeSeriesIntervalDate } from 'spinal-model-timeseries';
 import { TicketCountMap } from './utils';
 export declare class SpinalMain {
-    hubConnection: FileSystem;
-    serviceTimeseries: SpinalServiceTimeseries;
+    hubConnection: FileSystem | null;
+    serviceTimeseries: SpinalServiceTimeseries | null;
     buildingEndpoints: SpinalNode[];
-    outsideTempEndpoint: SpinalNode;
-    hygrometryEndpoint: SpinalNode;
+    outsideTempEndpoint: SpinalNode | null;
+    hygrometryEndpoint: SpinalNode | null;
     ticketMap: any;
     constructor();
     init(): Promise<unknown>;
@@ -17,6 +17,7 @@ export declare class SpinalMain {
     getEndpointValueAtTime(endpoint: SpinalNode<any>, timestamp: number): Promise<number | null>;
     initBuildingEndpoints(): Promise<void>;
     getEquipmentGroup(): Promise<SpinalNode>;
+    getSpecialRoomsGroup(): Promise<SpinalNode>;
     sendEmail(attachmentPaths: string[]): Promise<void>;
     initTicketMap(weekStart: Date, weekEnd: Date): Promise<TicketCountMap>;
 }

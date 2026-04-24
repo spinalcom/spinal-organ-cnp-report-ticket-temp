@@ -38,9 +38,9 @@ import { SpinalExcelFiller } from "spinal-service-excel-filler";
 import * as path from "path";
 import { existsSync, unlinkSync } from "fs";
 import { SpinalDateValue, SpinalServiceTimeseries, TimeSeriesIntervalDate } from 'spinal-model-timeseries';
-import { buildFloorZoneMap, generateDayTempReport, generateWeeklyTempReports } from './temperatureReport';
+import { buildFloorZoneMap, generateTempReport } from './temperatureReport';
 import { generateWeeklyTicketReport } from './ticketReport';
-import { PROCESS_NAME_TO_CELL_KEY, STEP_NAME_TO_STATUS, TicketCountMap } from './utils';
+import { PROCESS_NAME_TO_TOKEN, STEP_NAME_TO_STATUS, TicketCountMap } from './utils';
 
 require('dotenv').config();
 
@@ -193,6 +193,28 @@ export class SpinalMain {
   }
 
 
+  async getSpecialRoomsGroup(): Promise<SpinalNode> {
+    const graph = SpinalGraphService.getGraph();
+    const contexts = await graph.getChildren('hasContext');
+
+    const ctx = contexts.find((c) => c.getName().get() === process.env.SPECIAL_ROOM_CONTEXT_NAME);
+    if (!ctx) {
+      throw new Error(`Context "${process.env.SPECIAL_ROOM_CONTEXT_NAME}" not found in the graph.`);
+    }
+    const categories = await ctx.getChildren('hasCategory');
+    const category = categories.find((cat) => cat.getName().get() === process.env.SPECIAL_ROOM_CATEGORY_NAME);
+    if (!category) {
+      throw new Error(`Category "${process.env.SPECIAL_ROOM_CATEGORY_NAME}" not found in context "${process.env.SPECIAL_ROOM_CONTEXT_NAME}".`);
+    }
+    const groups = await category.getChildren('hasGroup');
+    const group = groups.find((grp) => grp.getName().get() === process.env.SPECIAL_ROOM_GROUP_NAME);
+    if (!group) {
+      throw new Error(`Group "${process.env.SPECIAL_ROOM_GROUP_NAME}" not found in category "${process.env.SPECIAL_ROOM_CATEGORY_NAME}".`);
+    }
+    return group;
+  }
+
+
   public async sendEmail(attachmentPaths: string[]) {
     const mailer = new SpinalMailer({
       host: process.env.SMTP_HOST!,
@@ -239,14 +261,13 @@ export class SpinalMain {
 
     for (const proc of ticketProcesses) {
       const processName = proc.getName().get();
-      const cellKey = PROCESS_NAME_TO_CELL_KEY[processName];
-      if (!cellKey) {
+      if (!(processName in PROCESS_NAME_TO_TOKEN)) {
         console.warn(`Unknown ticket process "${processName}". Skipping.`);
         continue;
       }
 
-      if (!ticketCountMap[cellKey]) {
-        ticketCountMap[cellKey] = { attente: 0, cloturee: 0, realisationPartielle: 0, refusee: 0 };
+      if (!ticketCountMap[processName]) {
+        ticketCountMap[processName] = { attenteLect: 0, attenteReal: 0, realisationPartielle: 0, refusee: 0, cloturee: 0 };
       }
 
       const ticketSteps = await proc.getChildren('SpinalSystemServiceTicketHasStep');
@@ -262,7 +283,7 @@ export class SpinalMain {
         for (const ticket of tickets) {
           const creationDate = ticket.info.creationDate?.get();
           if (creationDate && creationDate >= startTs && creationDate < endTs) {
-            ticketCountMap[cellKey][status]++;
+            ticketCountMap[processName][status]++;
           }
         }
       }
@@ -281,43 +302,71 @@ export class SpinalMain {
 }
 
 
-async function runReports(spinalMain: SpinalMain) {
+async function generateAndSend(spinalMain: SpinalMain, outputPaths: string[]) {
+  if (outputPaths.length === 0) return;
+  console.log('Sending email...');
+  await spinalMain.sendEmail(outputPaths);
+
+  for (const filePath of outputPaths) {
+    try {
+      unlinkSync(filePath);
+      console.log(`Deleted: ${filePath}`);
+    } catch (err) {
+      console.warn(`Failed to delete ${filePath}:`, (err as Error).message);
+    }
+  }
+}
+
+
+async function runTempReport(spinalMain: SpinalMain, period: 'morning' | 'evening') {
+  const enableTemp = process.env.ENABLE_TEMP_REPORT !== 'false';
+  if (!enableTemp) {
+    console.log('Temperature report skipped (ENABLE_TEMP_REPORT=false).');
+    return;
+  }
+
+  console.log(`--- Temperature Report (${period}) ---`);
+  const floorZoneMap = await buildFloorZoneMap(spinalMain);
+  const outputPath = await generateTempReport(spinalMain, floorZoneMap, period);
+  await generateAndSend(spinalMain, [outputPath]);
+  console.log('Done.');
+}
+
+
+async function runTicketReport(spinalMain: SpinalMain) {
+  const enableTickets = process.env.ENABLE_TICKET_REPORT !== 'false';
+  if (!enableTickets) {
+    console.log('Ticket report skipped (ENABLE_TICKET_REPORT=false).');
+    return;
+  }
+
+  console.log('--- Ticket Report ---');
+  const ticketPath = await generateWeeklyTicketReport(spinalMain);
+  await generateAndSend(spinalMain, [ticketPath]);
+  console.log('Done.');
+}
+
+
+async function runAllReports(spinalMain: SpinalMain) {
   const enableTemp = process.env.ENABLE_TEMP_REPORT !== 'false';
   const enableTickets = process.env.ENABLE_TICKET_REPORT !== 'false';
   const allOutputPaths: string[] = [];
 
   if (enableTemp) {
-    console.log('--- Temperature Reports ---');
-    const tempPaths = await generateWeeklyTempReports(spinalMain);
-    allOutputPaths.push(...tempPaths);
-    console.log(`Generated ${tempPaths.length} temp reports.`);
-  } else {
-    console.log('Temperature report skipped (ENABLE_TEMP_REPORT=false).');
+    console.log('--- Temperature Reports (--run-now) ---');
+    const floorZoneMap = await buildFloorZoneMap(spinalMain);
+    const morningPath = await generateTempReport(spinalMain, floorZoneMap, 'morning');
+    const eveningPath = await generateTempReport(spinalMain, floorZoneMap, 'evening');
+    allOutputPaths.push(morningPath, eveningPath);
   }
 
   if (enableTickets) {
-    console.log('--- Ticket Report ---');
+    console.log('--- Ticket Report (--run-now) ---');
     const ticketPath = await generateWeeklyTicketReport(spinalMain);
     allOutputPaths.push(ticketPath);
-  } else {
-    console.log('Ticket report skipped (ENABLE_TICKET_REPORT=false).');
   }
 
-  if (allOutputPaths.length > 0) {
-    console.log('Sending email...');
-    await spinalMain.sendEmail(allOutputPaths);
-
-    // Cleanup generated files
-    for (const filePath of allOutputPaths) {
-      try {
-        unlinkSync(filePath);
-        console.log(`Deleted: ${filePath}`);
-      } catch (err) {
-        console.warn(`Failed to delete ${filePath}:`, (err as Error).message);
-      }
-    }
-  }
-
+  await generateAndSend(spinalMain, allOutputPaths);
   console.log('Done.');
 }
 
@@ -328,24 +377,61 @@ async function Main() {
   await spinalMain.initBuildingEndpoints();
 
   const args = process.argv.slice(2);
-  const runNowIndex = args.indexOf('--run-now');
 
-  if (runNowIndex !== -1) {
-    console.log('[--run-now] Running reports immediately...');
-    await runReports(spinalMain);
+  if (args.includes('--run-temp')) {
+    console.log('[--run-temp] Running temperature reports immediately...');
+    const floorZoneMap = await buildFloorZoneMap(spinalMain);
+    const morningPath = await generateTempReport(spinalMain, floorZoneMap, 'morning');
+    const eveningPath = await generateTempReport(spinalMain, floorZoneMap, 'evening');
+    await generateAndSend(spinalMain, [morningPath, eveningPath]);
     process.exit(0);
   }
 
-  // Production mode: cron every Friday at 7pm
-  console.log('Scheduling weekly report generation: every Friday at 7:00 PM');
-  const job = new CronJob('0 19 * * 5', async () => {
+  if (args.includes('--run-tickets')) {
+    console.log('[--run-tickets] Running ticket report immediately...');
+    const ticketPath = await generateWeeklyTicketReport(spinalMain);
+    await generateAndSend(spinalMain, [ticketPath]);
+    process.exit(0);
+  }
+
+  if (args.includes('--run-now')) {
+    console.log('[--run-now] Running all reports immediately...');
+    await runAllReports(spinalMain);
+    process.exit(0);
+  }
+
+  // Temperature: morning at 8:30 and evening at 13:30, Mon-Fri
+  console.log('Scheduling temperature reports: 8:30 (morning) & 13:30 (evening) Mon-Fri');
+  const morningJob = new CronJob('30 8 * * 1-5', async () => {
     try {
-      console.log('Starting weekly report generation...');
-      await runReports(spinalMain);
+      console.log('Starting morning temperature report...');
+      await runTempReport(spinalMain, 'morning');
     } catch (err) {
-      console.error('Error generating weekly reports:', (err as Error).message);
+      console.error('Error generating morning temp report:', (err as Error).message);
     }
   });
-  job.start();
+  morningJob.start();
+
+  const eveningJob = new CronJob('30 13 * * 1-5', async () => {
+    try {
+      console.log('Starting evening temperature report...');
+      await runTempReport(spinalMain, 'evening');
+    } catch (err) {
+      console.error('Error generating evening temp report:', (err as Error).message);
+    }
+  });
+  eveningJob.start();
+
+  // Tickets: every Friday at 7pm
+  console.log('Scheduling ticket report: every Friday at 19:00');
+  const ticketJob = new CronJob('0 19 * * 5', async () => {
+    try {
+      console.log('Starting weekly ticket report...');
+      await runTicketReport(spinalMain);
+    } catch (err) {
+      console.error('Error generating ticket report:', (err as Error).message);
+    }
+  });
+  ticketJob.start();
 }
 Main();
