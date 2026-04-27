@@ -215,7 +215,7 @@ export class SpinalMain {
   }
 
 
-  public async sendEmail(attachmentPaths: string[]) {
+  public async sendEmail(attachmentPaths: string[], subject: string, text: string) {
     const mailer = new SpinalMailer({
       host: process.env.SMTP_HOST!,
       port: 465,
@@ -237,8 +237,8 @@ export class SpinalMain {
     await mailer.send({
       from: process.env.MAIL_FROM!,
       to: process.env.MAIL_TO!,
-      subject: process.env.MAIL_SUBJECT || "Rapport hebdomadaire CNP",
-      text: "Veuillez trouver ci-joint les rapports hebdomadaires.",
+      subject,
+      text,
       attachments,
     });
 
@@ -302,19 +302,41 @@ export class SpinalMain {
 }
 
 
-async function generateAndSend(spinalMain: SpinalMain, outputPaths: string[]) {
+async function generateAndSendTemp(spinalMain: SpinalMain, outputPaths: string[]) {
   if (outputPaths.length === 0) return;
-  console.log('Sending email...');
-  await spinalMain.sendEmail(outputPaths);
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const subject = process.env.TEMP_MAIL_SUBJECT || `Relevé de températures du ${dateStr}`;
+  const text = `Bonjour,\n\nVeuillez trouver ci-joint le(s) relevé(s) de températures du ${dateStr}.\n\nCordialement`;
+  console.log('Sending temperature email...');
+  await spinalMain.sendEmail(outputPaths, subject, text);
+  // for (const filePath of outputPaths) {
+  //   try {
+  //     unlinkSync(filePath);
+  //     console.log(`Deleted: ${filePath}`);
+  //   } catch (err) {
+  //     console.warn(`Failed to delete ${filePath}:`, (err as Error).message);
+  //   }
+  // }
+}
 
-  for (const filePath of outputPaths) {
-    try {
-      unlinkSync(filePath);
-      console.log(`Deleted: ${filePath}`);
-    } catch (err) {
-      console.warn(`Failed to delete ${filePath}:`, (err as Error).message);
-    }
-  }
+
+async function generateAndSendTickets(spinalMain: SpinalMain, outputPaths: string[]) {
+  if (outputPaths.length === 0) return;
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const subject = process.env.TICKET_MAIL_SUBJECT || `Rapport hebdomadaire tickets du ${dateStr}`;
+  const text = `Bonjour,\n\nVeuillez trouver ci-joint le rapport hebdomadaire des tickets.\n\nCordialement`;
+  console.log('Sending ticket email...');
+  await spinalMain.sendEmail(outputPaths, subject, text);
+  // for (const filePath of outputPaths) {
+  //   try {
+  //     unlinkSync(filePath);
+  //     console.log(`Deleted: ${filePath}`);
+  //   } catch (err) {
+  //     console.warn(`Failed to delete ${filePath}:`, (err as Error).message);
+  //   }
+  // }
 }
 
 
@@ -328,7 +350,7 @@ async function runTempReport(spinalMain: SpinalMain, period: 'morning' | 'evenin
   console.log(`--- Temperature Report (${period}) ---`);
   const floorZoneMap = await buildFloorZoneMap(spinalMain);
   const outputPath = await generateTempReport(spinalMain, floorZoneMap, period);
-  await generateAndSend(spinalMain, [outputPath]);
+  await generateAndSendTemp(spinalMain, [outputPath]);
   console.log('Done.');
 }
 
@@ -342,7 +364,7 @@ async function runTicketReport(spinalMain: SpinalMain) {
 
   console.log('--- Ticket Report ---');
   const ticketPath = await generateWeeklyTicketReport(spinalMain);
-  await generateAndSend(spinalMain, [ticketPath]);
+  await generateAndSendTickets(spinalMain, [ticketPath]);
   console.log('Done.');
 }
 
@@ -350,23 +372,25 @@ async function runTicketReport(spinalMain: SpinalMain) {
 async function runAllReports(spinalMain: SpinalMain) {
   const enableTemp = process.env.ENABLE_TEMP_REPORT !== 'false';
   const enableTickets = process.env.ENABLE_TICKET_REPORT !== 'false';
-  const allOutputPaths: string[] = [];
+  const tempOutputPaths: string[] = [];
+  const ticketOutputPaths: string[] = [];
 
   if (enableTemp) {
     console.log('--- Temperature Reports (--run-now) ---');
     const floorZoneMap = await buildFloorZoneMap(spinalMain);
     const morningPath = await generateTempReport(spinalMain, floorZoneMap, 'morning');
     const eveningPath = await generateTempReport(spinalMain, floorZoneMap, 'evening');
-    allOutputPaths.push(morningPath, eveningPath);
+    tempOutputPaths.push(morningPath, eveningPath);
   }
 
   if (enableTickets) {
     console.log('--- Ticket Report (--run-now) ---');
     const ticketPath = await generateWeeklyTicketReport(spinalMain);
-    allOutputPaths.push(ticketPath);
+    ticketOutputPaths.push(ticketPath);
   }
 
-  await generateAndSend(spinalMain, allOutputPaths);
+  await generateAndSendTemp(spinalMain, tempOutputPaths);
+  await generateAndSendTickets(spinalMain, ticketOutputPaths);
   console.log('Done.');
 }
 
@@ -383,14 +407,14 @@ async function Main() {
     const floorZoneMap = await buildFloorZoneMap(spinalMain);
     const morningPath = await generateTempReport(spinalMain, floorZoneMap, 'morning');
     const eveningPath = await generateTempReport(spinalMain, floorZoneMap, 'evening');
-    await generateAndSend(spinalMain, [morningPath, eveningPath]);
+    await generateAndSendTemp(spinalMain, [morningPath, eveningPath]);
     process.exit(0);
   }
 
   if (args.includes('--run-tickets')) {
     console.log('[--run-tickets] Running ticket report immediately...');
     const ticketPath = await generateWeeklyTicketReport(spinalMain);
-    await generateAndSend(spinalMain, [ticketPath]);
+    await generateAndSendTickets(spinalMain, [ticketPath]);
     process.exit(0);
   }
 
@@ -422,9 +446,10 @@ async function Main() {
   });
   eveningJob.start();
 
-  // Tickets: every Friday at 7pm
-  console.log('Scheduling ticket report: every Friday at 19:00');
-  const ticketJob = new CronJob('0 19 * * 5', async () => {
+  // Tickets: configurable cron via TICKET_CRON (default: every Friday at 7pm)
+  const ticketCron = process.env.TICKET_CRON || '0 19 * * 5';
+  console.log(`Scheduling ticket report: ${ticketCron}`);
+  const ticketJob = new CronJob(ticketCron, async () => {
     try {
       console.log('Starting weekly ticket report...');
       await runTicketReport(spinalMain);

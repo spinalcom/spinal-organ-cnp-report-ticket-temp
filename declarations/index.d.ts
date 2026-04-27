@@ -18,6 +18,6 @@ export declare class SpinalMain {
     initBuildingEndpoints(): Promise<void>;
     getEquipmentGroup(): Promise<SpinalNode>;
     getSpecialRoomsGroup(): Promise<SpinalNode>;
-    sendEmail(attachmentPaths: string[]): Promise<void>;
+    sendEmail(attachmentPaths: string[], subject: string, text: string): Promise<void>;
     initTicketMap(weekStart: Date, weekEnd: Date): Promise<TicketCountMap>;
 }

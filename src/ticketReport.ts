@@ -27,7 +27,20 @@ function getTicketDateRange(referenceDate: Date): { start: Date; end: Date } {
 
 export async function generateWeeklyTicketReport(spinalMain: SpinalMain, referenceDate?: Date): Promise<string> {
     const ref = referenceDate || new Date();
-    const { start: weekStart, end: weekEnd } = getTicketDateRange(ref);
+
+    let weekStart: Date;
+    let weekEnd: Date;
+
+    if (process.env.TICKET_DATE_START) {
+        // Fixed start date from env, end = start + 7 days
+        weekStart = new Date(process.env.TICKET_DATE_START);
+        weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekEnd.getDate() + 7);
+    } else {
+        const range = getTicketDateRange(ref);
+        weekStart = range.start;
+        weekEnd = range.end;
+    }
 
     console.log(`Ticket range: ${weekStart.toISOString()} → ${weekEnd.toISOString()}`);
 
