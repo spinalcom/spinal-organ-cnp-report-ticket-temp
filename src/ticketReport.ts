@@ -7,40 +7,12 @@ import { PROCESS_NAME_TO_TOKEN, MLT_PROCESSES, MLS_PROCESSES, STATUS_ORDER } fro
 const PROD_SHEET = 'Production';
 
 
-/**
- * Computes last Friday 19:00 → current Friday 19:00 range.
- * If referenceDate is not a Friday, goes back to the most recent Friday.
- */
-function getTicketDateRange(referenceDate: Date): { start: Date; end: Date } {
-    const end = new Date(referenceDate);
-    const dayOfWeek = end.getDay(); // 0=Sun, 5=Fri
-    const daysToFriday = (dayOfWeek + 2) % 7; // days since last Friday
-    end.setDate(end.getDate() - daysToFriday);
-    end.setHours(19, 0, 0, 0);
-
-    const start = new Date(end);
-    start.setDate(start.getDate() - 7);
-
-    return { start, end };
-}
-
-
 export async function generateWeeklyTicketReport(spinalMain: SpinalMain, referenceDate?: Date): Promise<string> {
-    const ref = referenceDate || new Date();
-
-    let weekStart: Date;
-    let weekEnd: Date;
-
-    if (process.env.TICKET_DATE_START) {
-        // Fixed start date from env, end = start + 7 days
-        weekStart = new Date(process.env.TICKET_DATE_START);
-        weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekEnd.getDate() + 7);
-    } else {
-        const range = getTicketDateRange(ref);
-        weekStart = range.start;
-        weekEnd = range.end;
-    }
+    const end = referenceDate || new Date();
+    const weekEnd = new Date(end);
+    weekEnd.setSeconds(0, 0);
+    const weekStart = new Date(weekEnd);
+    weekStart.setDate(weekStart.getDate() - 7);
 
     console.log(`Ticket range: ${weekStart.toISOString()} → ${weekEnd.toISOString()}`);
 

@@ -237,6 +237,7 @@ export class SpinalMain {
     await mailer.send({
       from: process.env.MAIL_FROM!,
       to: process.env.MAIL_TO!,
+      cc: process.env.MAIL_CC,
       subject,
       text,
       attachments,
