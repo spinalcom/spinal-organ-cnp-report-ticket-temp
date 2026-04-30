@@ -31,8 +31,9 @@ export async function generateWeeklyTicketReport(spinalMain: SpinalMain, referen
 
     // Date range header (embedded tokens Date1/Date2 in A1 & B1)
     const fmt = (d: Date) => d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    const dateStart = `${fmt(weekStart)} 19:00:00`;
-    const dateEnd = `${fmt(weekEnd)} 19:00:00`;
+    const timeFmt = (d: Date) => d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const dateStart = `${fmt(weekStart)} ${timeFmt(weekStart)}`;
+    const dateEnd = `${fmt(weekEnd)} ${timeFmt(weekEnd)}`;
     // A1 and B1 both contain "Du {{Date1}} au {{Date2}}" — set formatted string on Production
     const dateStr = `Du ${dateStart} au ${dateEnd}`;
     for (const loc of varLocations['Date1']) {

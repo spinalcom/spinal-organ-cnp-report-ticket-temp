@@ -4,7 +4,7 @@
   "description": "Organ that handles CNP ticket reports",
   "main": "index.js",
   "scripts": {
-    "start": "node dist/src/index.js",
+    "start": "node dist/index.js",
     "build": "rm -rf dist declarations && tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
