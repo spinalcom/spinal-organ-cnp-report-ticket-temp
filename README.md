@@ -127,3 +127,18 @@ node dist/index.js --run-temp
 # Tickets only
 node dist/index.js --run-tickets
 ```
+
+**Ticket time override** — control the end date of the ticket extraction window (start = end - 7 days):
+
+```bash
+# Today at a specific time (HH:MM)
+node dist/index.js --run-tickets --ticket-time=19:00
+
+# Full date and time
+node dist/index.js --run-tickets --ticket-time=2026-05-30T19:00
+
+# Full date (defaults to 00:00)
+node dist/index.js --run-tickets --ticket-time=2026-05-30
+```
+
+Also works with `--run-now`.

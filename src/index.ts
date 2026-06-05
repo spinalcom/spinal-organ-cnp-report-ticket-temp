@@ -370,7 +370,7 @@ async function runTicketReport(spinalMain: SpinalMain) {
 }
 
 
-async function runAllReports(spinalMain: SpinalMain) {
+async function runAllReports(spinalMain: SpinalMain, ticketRefDate?: Date) {
   const enableTemp = process.env.ENABLE_TEMP_REPORT !== 'false';
   const enableTickets = process.env.ENABLE_TICKET_REPORT !== 'false';
   const tempOutputPaths: string[] = [];
@@ -386,7 +386,7 @@ async function runAllReports(spinalMain: SpinalMain) {
 
   if (enableTickets) {
     console.log('--- Ticket Report (--run-now) ---');
-    const ticketPath = await generateWeeklyTicketReport(spinalMain);
+    const ticketPath = await generateWeeklyTicketReport(spinalMain, ticketRefDate);
     ticketOutputPaths.push(ticketPath);
   }
 
@@ -403,6 +403,24 @@ async function Main() {
 
   const args = process.argv.slice(2);
 
+  // Parse --ticket-time to override the ticket end date/time
+  // Look README for accepted formats (full date or time only)
+  const ticketTimeArg = args.find((a) => a.startsWith('--ticket-time='));
+  let ticketRefDate: Date | undefined;
+  if (ticketTimeArg) {
+    const val = ticketTimeArg.split('=')[1];
+    if (val.includes('T') || val.includes('-')) {
+      // Full date: YYYY-MM-DDTHH:MM or YYYY-MM-DD
+      ticketRefDate = new Date(val);
+    } else {
+      // Time only: HH:MM (today)
+      const [h, m] = val.split(':').map(Number);
+      ticketRefDate = new Date();
+      ticketRefDate.setHours(h, m, 0, 0);
+    }
+    console.log(`[--ticket-time] Using ticket end time: ${ticketRefDate.toISOString()}`);
+  }
+
   if (args.includes('--run-temp')) {
     console.log('[--run-temp] Running temperature reports immediately...');
     const floorZoneMap = await buildFloorZoneMap(spinalMain);
@@ -414,14 +432,14 @@ async function Main() {
 
   if (args.includes('--run-tickets')) {
     console.log('[--run-tickets] Running ticket report immediately...');
-    const ticketPath = await generateWeeklyTicketReport(spinalMain);
+    const ticketPath = await generateWeeklyTicketReport(spinalMain, ticketRefDate);
     await generateAndSendTickets(spinalMain, [ticketPath]);
     process.exit(0);
   }
 
   if (args.includes('--run-now')) {
     console.log('[--run-now] Running all reports immediately...');
-    await runAllReports(spinalMain);
+    await runAllReports(spinalMain, ticketRefDate);
     process.exit(0);
   }
 
