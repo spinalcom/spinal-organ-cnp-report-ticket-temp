@@ -41,8 +41,15 @@ import { SpinalDateValue, SpinalServiceTimeseries, TimeSeriesIntervalDate } from
 import { buildFloorZoneMap, generateTempReport } from './temperatureReport';
 import { generateWeeklyTicketReport } from './ticketReport';
 import { PROCESS_NAME_TO_TOKEN, STEP_NAME_TO_STATUS, TicketCountMap } from './utils';
+import { getLastRun, setLastRun, getMostRecentMissed, getStateFilePath, ReportKey } from './reportState';
 
 require('dotenv').config();
+
+// Cron schedules — shared by the live jobs and the startup catch-up so both
+// agree on when each report is supposed to run.
+const TEMP_MORNING_CRON = '30 8 * * 1-5';
+const TEMP_EVENING_CRON = '30 13 * * 1-5';
+const TICKET_CRON = process.env.TICKET_CRON || '0 19 * * 5';
 
 
 export class SpinalMain {
@@ -303,9 +310,9 @@ export class SpinalMain {
 }
 
 
-async function generateAndSendTemp(spinalMain: SpinalMain, outputPaths: string[]) {
+async function generateAndSendTemp(spinalMain: SpinalMain, outputPaths: string[], refDate?: Date) {
   if (outputPaths.length === 0) return;
-  const now = new Date();
+  const now = refDate || new Date();
   const dateStr = now.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
   const subject = process.env.TEMP_MAIL_SUBJECT || `Relevé de températures du ${dateStr}`;
   const text = `Bonjour,\n\nVeuillez trouver ci-joint le(s) relevé(s) de températures du ${dateStr}.\n\nCordialement`;
@@ -322,9 +329,9 @@ async function generateAndSendTemp(spinalMain: SpinalMain, outputPaths: string[]
 }
 
 
-async function generateAndSendTickets(spinalMain: SpinalMain, outputPaths: string[]) {
+async function generateAndSendTickets(spinalMain: SpinalMain, outputPaths: string[], refDate?: Date) {
   if (outputPaths.length === 0) return;
-  const now = new Date();
+  const now = refDate || new Date();
   const dateStr = now.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
   const subject = process.env.TICKET_MAIL_SUBJECT || `Rapport hebdomadaire tickets du ${dateStr}`;
   const text = `Bonjour,\n\nVeuillez trouver ci-joint le rapport hebdomadaire des tickets.\n\nCordialement`;
@@ -341,32 +348,86 @@ async function generateAndSendTickets(spinalMain: SpinalMain, outputPaths: strin
 }
 
 
-async function runTempReport(spinalMain: SpinalMain, period: 'morning' | 'evening') {
+async function runTempReport(spinalMain: SpinalMain, period: 'morning' | 'evening', day?: Date) {
   const enableTemp = process.env.ENABLE_TEMP_REPORT !== 'false';
   if (!enableTemp) {
     console.log('Temperature report skipped (ENABLE_TEMP_REPORT=false).');
     return;
   }
 
-  console.log(`--- Temperature Report (${period}) ---`);
+  console.log(`--- Temperature Report (${period})${day ? ` [${day.toISOString()}]` : ''} ---`);
   const floorZoneMap = await buildFloorZoneMap(spinalMain);
-  const outputPath = await generateTempReport(spinalMain, floorZoneMap, period);
-  await generateAndSendTemp(spinalMain, [outputPath]);
+  const outputPath = await generateTempReport(spinalMain, floorZoneMap, period, day);
+  await generateAndSendTemp(spinalMain, [outputPath], day);
   console.log('Done.');
 }
 
 
-async function runTicketReport(spinalMain: SpinalMain) {
+async function runTicketReport(spinalMain: SpinalMain, refDate?: Date) {
   const enableTickets = process.env.ENABLE_TICKET_REPORT !== 'false';
   if (!enableTickets) {
     console.log('Ticket report skipped (ENABLE_TICKET_REPORT=false).');
     return;
   }
 
-  console.log('--- Ticket Report ---');
-  const ticketPath = await generateWeeklyTicketReport(spinalMain);
-  await generateAndSendTickets(spinalMain, [ticketPath]);
+  console.log(`--- Ticket Report${refDate ? ` [${refDate.toISOString()}]` : ''} ---`);
+  const ticketPath = await generateWeeklyTicketReport(spinalMain, refDate);
+  await generateAndSendTickets(spinalMain, [ticketPath], refDate);
   console.log('Done.');
+}
+
+
+/**
+ * On startup, detect reports that were missed while the process was down
+ * (e.g. after a crash) and regenerate the most recent missed one per type,
+ * dated with its ORIGINAL scheduled occurrence rather than "now".
+ */
+async function catchUpMissedReports(spinalMain: SpinalMain) {
+  if (process.env.ENABLE_CATCHUP === 'false') {
+    console.log('[catch-up] Disabled (ENABLE_CATCHUP=false).');
+    return;
+  }
+
+  const now = new Date();
+  const enableTemp = process.env.ENABLE_TEMP_REPORT !== 'false';
+  const enableTickets = process.env.ENABLE_TICKET_REPORT !== 'false';
+
+  console.log(`[catch-up] Checking for missed reports (state: ${getStateFilePath()})...`);
+
+  const tasks: { key: ReportKey; label: string; cron: string; enabled: boolean; run: (day: Date) => Promise<void> }[] = [
+    { key: 'tempMorning', label: 'temperature (morning)', cron: TEMP_MORNING_CRON, enabled: enableTemp, run: (d) => runTempReport(spinalMain, 'morning', d) },
+    { key: 'tempEvening', label: 'temperature (evening)', cron: TEMP_EVENING_CRON, enabled: enableTemp, run: (d) => runTempReport(spinalMain, 'evening', d) },
+    { key: 'ticket', label: 'ticket', cron: TICKET_CRON, enabled: enableTickets, run: (d) => runTicketReport(spinalMain, d) },
+  ];
+
+  for (const task of tasks) {
+    if (!task.enabled) continue;
+
+    const lastRun = getLastRun(task.key);
+    if (lastRun === undefined) {
+      // First launch (or newly enabled): seed a baseline so we don't back-fill
+      // the entire history. Future runs are recorded as they complete.
+      setLastRun(task.key, now.getTime());
+      console.log(`[catch-up] ${task.label}: no previous run recorded — seeding baseline, no catch-up.`);
+      continue;
+    }
+
+    const missed = getMostRecentMissed(task.cron, lastRun, now);
+    if (!missed) {
+      console.log(`[catch-up] ${task.label}: up to date.`);
+      continue;
+    }
+
+    console.log(`[catch-up] ${task.label}: missed run of ${missed.toISOString()} (last success ${new Date(lastRun).toISOString()}). Regenerating with original date...`);
+    try {
+      await task.run(missed);
+      setLastRun(task.key, missed.getTime());
+      console.log(`[catch-up] ${task.label}: recovered.`);
+    } catch (err) {
+      // Leave the pointer untouched so the next restart retries this occurrence.
+      console.error(`[catch-up] ${task.label}: failed for ${missed.toISOString()}: ${(err as Error).message}. Will retry on next restart.`);
+    }
+  }
 }
 
 
@@ -443,22 +504,27 @@ async function Main() {
     process.exit(0);
   }
 
+  // Recover reports missed while the process was down (e.g. after a crash).
+  await catchUpMissedReports(spinalMain);
+
   // Temperature: morning at 8:30 and evening at 13:30, Mon-Fri
   console.log('Scheduling temperature reports: 8:30 (morning) & 13:30 (evening) Mon-Fri');
-  const morningJob = new CronJob('30 8 * * 1-5', async () => {
+  const morningJob = new CronJob(TEMP_MORNING_CRON, async () => {
     try {
       console.log('Starting morning temperature report...');
       await runTempReport(spinalMain, 'morning');
+      setLastRun('tempMorning', Date.now());
     } catch (err) {
       console.error('Error generating morning temp report:', (err as Error).message);
     }
   });
   morningJob.start();
 
-  const eveningJob = new CronJob('30 13 * * 1-5', async () => {
+  const eveningJob = new CronJob(TEMP_EVENING_CRON, async () => {
     try {
       console.log('Starting evening temperature report...');
       await runTempReport(spinalMain, 'evening');
+      setLastRun('tempEvening', Date.now());
     } catch (err) {
       console.error('Error generating evening temp report:', (err as Error).message);
     }
@@ -466,12 +532,12 @@ async function Main() {
   eveningJob.start();
 
   // Tickets: configurable cron via TICKET_CRON (default: every Friday at 7pm)
-  const ticketCron = process.env.TICKET_CRON || '0 19 * * 5';
-  console.log(`Scheduling ticket report: ${ticketCron}`);
-  const ticketJob = new CronJob(ticketCron, async () => {
+  console.log(`Scheduling ticket report: ${TICKET_CRON}`);
+  const ticketJob = new CronJob(TICKET_CRON, async () => {
     try {
       console.log('Starting weekly ticket report...');
       await runTicketReport(spinalMain);
+      setLastRun('ticket', Date.now());
     } catch (err) {
       console.error('Error generating ticket report:', (err as Error).message);
     }

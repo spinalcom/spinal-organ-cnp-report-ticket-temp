@@ -33,6 +33,29 @@ Each report type is sent in a separate email with its own subject and body text,
 | Temperature (evening) | 1:30 PM, Mon–Fri | — |
 | Tickets | Friday 7:00 PM (default) | `TICKET_CRON` |
 
+## Crash recovery (catch-up)
+
+The organ tolerates crashes that happen during or around a scheduled report. It
+records the timestamp of the last successful run of each report type in a small
+JSON file (`report-state.json` by default, configurable via `STATE_FILE`):
+
+```json
+{ "tempMorning": 1720512600000, "tempEvening": 1720544400000, "ticket": 1720465200000 }
+```
+
+On startup, before the cron jobs start, it compares each timestamp against the
+schedule. If the **most recent** scheduled occurrence was missed while the
+process was down, it regenerates that one report — dated with its **original**
+scheduled date (Excel content, filename, and email subject all reflect the
+original date, not the restart time). Older missed occurrences are not
+back-filled, so a long outage never floods the mailbox.
+
+- If a catch-up report **fails** (e.g. historical data unavailable), the saved
+  timestamp is left untouched so it is retried on the next restart.
+- The **first ever** launch (empty state file) just records a baseline; it does
+  not back-fill history.
+- Set `ENABLE_CATCHUP=false` to disable the whole mechanism.
+
 ## Environment variables
 
 Create a `.env` file with:
@@ -81,6 +104,10 @@ TICKET_CRON=0 19 * * 5
 ENABLE_TEMP_REPORT=true
 ENABLE_TICKET_REPORT=true
 
+# Crash recovery (see "Crash recovery" section)
+ENABLE_CATCHUP=true
+# STATE_FILE=report-state.json
+
 # Email
 SMTP_HOST=
 SMTP_EMAIL=
@@ -97,9 +124,10 @@ TICKET_MAIL_SUBJECT=
 templates/          Excel templates (with Production + Template sheets)
 prod/               Generated output files
 src/
-  index.ts          Main entry point, SpinalMain class, scheduling
+  index.ts          Main entry point, SpinalMain class, scheduling, catch-up
   temperatureReport.ts  Floor/zone map, special rooms, temp report generation
   ticketReport.ts   Ticket counting and report generation
+  reportState.ts    Persistent last-run state + missed-run detection
   utils.ts          Shared mappings and helpers
 ```
 
