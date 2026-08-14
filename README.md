@@ -18,8 +18,27 @@ Generates temperature and ticket report Excel files from BMS data in a SpinalCom
 ### Ticket reports
 
 - Traverses the ticket context and counts tickets by **process** and **status** within a configurable date range
-- Fills the ticket Excel template using tagged variables, writes to the Production sheet
+- Produces a two-sheet Excel file:
+  - **Production** — the summary counts (process × status), from the `Template` sheet
+  - **Liste des tickets** — one row per kept ticket, from the `Template liste des tickets` sheet
+- Both template sheets are filled in place and renamed at the end (`Template` → `Production`, `Template liste des tickets` → `Liste des tickets`)
 - Outputs one `.xlsx` file per week: `Tickets CNP DD-MM-YY_DD-MM-YY.xlsx`
+
+#### "Liste des tickets" columns
+
+Ticket attributes are read via the documentation service (`category | attribute`):
+
+| Column | Source |
+|---|---|
+| Mission ID | `GMAO \| gmaoId` |
+| Domaine | process (ticket's parent process name) |
+| Etape | step (ticket's parent step name) |
+| Description | `default \| declarer_id` (appelant) + `GMAO \| Local Mission` (localisation) + `default \| description` (demande), one labelled line each |
+| Date de création | `default \| creationDate` (falls back to the node's `creationDate`) |
+| Date du passage au dernier statut | most recent non-empty of `GMAO \| Date ALE / Date ARE / Date REP / Date CLO / Date REF` |
+| Commentaire du prestataire | message of the last `hasNotes` note on the ticket |
+
+Rows are ordered as encountered during the traversal (grouped by Domaine, then Etape). Missing attributes render as blank cells.
 
 ### Email
 

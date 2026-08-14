@@ -1,7 +1,7 @@
 import { FileSystem, Model } from 'spinal-core-connectorjs';
 import { SpinalNode } from 'spinal-env-viewer-graph-service';
 import { SpinalDateValue, SpinalServiceTimeseries, TimeSeriesIntervalDate } from 'spinal-model-timeseries';
-import { TicketCountMap } from './utils';
+import { TicketCountMap, TicketRef } from './utils';
 export declare class SpinalMain {
     hubConnection: FileSystem | null;
     serviceTimeseries: SpinalServiceTimeseries | null;
@@ -19,5 +19,8 @@ export declare class SpinalMain {
     getEquipmentGroup(): Promise<SpinalNode>;
     getSpecialRoomsGroup(): Promise<SpinalNode>;
     sendEmail(attachmentPaths: string[], subject: string, text: string): Promise<void>;
-    initTicketMap(weekStart: Date, weekEnd: Date): Promise<TicketCountMap>;
+    initTicketMap(weekStart: Date, weekEnd: Date): Promise<{
+        countMap: TicketCountMap;
+        tickets: TicketRef[];
+    }>;
 }

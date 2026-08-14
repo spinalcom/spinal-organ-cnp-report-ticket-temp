@@ -40,7 +40,7 @@ import { existsSync, unlinkSync } from "fs";
 import { SpinalDateValue, SpinalServiceTimeseries, TimeSeriesIntervalDate } from 'spinal-model-timeseries';
 import { buildFloorZoneMap, generateTempReport } from './temperatureReport';
 import { generateWeeklyTicketReport } from './ticketReport';
-import { PROCESS_NAME_TO_TOKEN, STEP_NAME_TO_STATUS, TicketCountMap } from './utils';
+import { PROCESS_NAME_TO_TOKEN, STEP_NAME_TO_STATUS, TicketCountMap, TicketRef } from './utils';
 import { getLastRun, setLastRun, getMostRecentMissed, getStateFilePath, ReportKey } from './reportState';
 
 require('dotenv').config();
@@ -253,7 +253,7 @@ export class SpinalMain {
     console.log(`Email sent to ${process.env.MAIL_TO} with ${attachments.length} attachment(s).`);
   }
 
-  public async initTicketMap(weekStart: Date, weekEnd: Date): Promise<TicketCountMap> {
+  public async initTicketMap(weekStart: Date, weekEnd: Date): Promise<{ countMap: TicketCountMap; tickets: TicketRef[] }> {
     const graph = SpinalGraphService.getGraph();
     const contexts = await graph.getChildren('hasContext');
     const ticketContext = contexts.find((ctx) => ctx.getName().get() === process.env.TICKET_CONTEXT);
@@ -265,6 +265,7 @@ export class SpinalMain {
     const endTs = weekEnd.getTime();
 
     const ticketCountMap: TicketCountMap = {};
+    const ticketRefs: TicketRef[] = [];
     const ticketProcesses = await ticketContext.getChildren('SpinalSystemServiceTicketHasProcess');
 
     for (const proc of ticketProcesses) {
@@ -292,6 +293,8 @@ export class SpinalMain {
           const creationDate = ticket.info.creationDate?.get();
           if (creationDate && creationDate >= startTs && creationDate < endTs) {
             ticketCountMap[processName][status]++;
+            // Kept for the "Liste des tickets" sheet; Domaine = process, Etape = step.
+            ticketRefs.push({ node: ticket, domaine: processName, etape: stepName });
           }
         }
       }
@@ -304,8 +307,9 @@ export class SpinalMain {
         console.log(`  ${key}: attente=${statuses.attente} cloturee=${statuses.cloturee} partielle=${statuses.realisationPartielle} refusee=${statuses.refusee} total=${total}`);
       }
     }
+    console.log(`Collected ${ticketRefs.length} ticket(s) in range for the detail list.`);
 
-    return ticketCountMap;
+    return { countMap: ticketCountMap, tickets: ticketRefs };
   }
 }
 

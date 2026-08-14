@@ -1,3 +1,5 @@
+import type { SpinalNode } from 'spinal-env-viewer-graph-service';
+
 const VALID_ZONES = ['A', 'B', 'C', 'D'];
 
 export function parseAttrValue(attrValue: string): { floor: string; zoneLetter: string } | null {
@@ -10,7 +12,7 @@ export function parseAttrValue(attrValue: string): { floor: string; zoneLetter: 
 }
 
 export function getColorFromValue(value: number): string {
-    return value < 18 ? "f7caac" : "c5e0b3";
+    return (value < 19 || value > 27) ? "f7caac" : "c5e0b3";
 }
 
 // Maps DB process names to their template token name
@@ -51,6 +53,28 @@ export const STATUS_ORDER = ['attenteLect', 'attenteReal', 'realisationPartielle
 
 // processName -> status -> count
 export type TicketCountMap = Record<string, Record<string, number>>;
+
+// A ticket kept for the "Liste des tickets" sheet, with the process (Domaine)
+// and step (Etape) it was found under during the context traversal.
+export interface TicketRef {
+    node: SpinalNode;
+    domaine: string; // process name
+    etape: string;   // step name
+}
+
+// Where each detail-list column reads its value from: [attribute category, attribute name].
+export const TICKET_ATTR = {
+    missionId: { category: 'GMAO', name: 'gmaoId' },
+    appelant: { category: 'default', name: 'declarer_id' },
+    localisation: { category: 'GMAO', name: 'Local Mission' },
+    demande: { category: 'default', name: 'description' },
+    creationDate: { category: 'default', name: 'creationDate' },
+} as const;
+
+// GMAO status-transition dates; the most recent non-empty one is the
+// "Date du passage au dernier statut".
+export const TICKET_STATUS_DATE_CATEGORY = 'GMAO';
+export const TICKET_STATUS_DATE_ATTRS = ['Date ALE', 'Date ARE', 'Date REP', 'Date CLO', 'Date REF'];
 
 // Maps special room node names to their Excel template token
 export const ROOM_NAME_TO_TOKEN: Record<string, string> = {
