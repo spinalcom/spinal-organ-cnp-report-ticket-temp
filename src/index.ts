@@ -42,6 +42,7 @@ import { buildFloorZoneMap, generateTempReport } from './temperatureReport';
 import { generateWeeklyTicketReport } from './ticketReport';
 import { PROCESS_NAME_TO_TOKEN, STEP_NAME_TO_STATUS, TicketCountMap } from './utils';
 import { getLastRun, setLastRun, getMostRecentMissed, getStateFilePath, ReportKey } from './reportState';
+import { serviceDocumentation } from 'spinal-env-viewer-plugin-documentation-service';
 
 require('dotenv').config();
 
@@ -289,7 +290,13 @@ export class SpinalMain {
 
         const tickets = await step.getChildren('SpinalSystemServiceTicketHasTicket');
         for (const ticket of tickets) {
-          const creationDate = ticket.info.creationDate?.get();
+          let creationDate = ticket.info.creationDate?.get();
+          if (!creationDate) {
+            const creationDateAttr = await serviceDocumentation.findOneAttributeInCategory(ticket, 'default', 'creationDate');
+            if (creationDateAttr !== -1) {
+              creationDate = Number(creationDateAttr?.value?.get());
+            }
+          }
           if (creationDate && creationDate >= startTs && creationDate < endTs) {
             ticketCountMap[processName][status]++;
           }
