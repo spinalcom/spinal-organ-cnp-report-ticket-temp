@@ -226,12 +226,13 @@ export class SpinalMain {
   public async sendEmail(attachmentPaths: string[], subject: string, text: string) {
     const mailer = new SpinalMailer({
       host: process.env.SMTP_HOST!,
-      port: 465,
-      secure: true,
-      auth: {
-        user: process.env.SMTP_EMAIL!,
-        pass: process.env.SMTP_PASS!,
-      }
+      port: 587,
+      secure: false,
+      auth: false,
+      tls: {
+        rejectUnauthorized: true
+      },
+      name: "spinalcom.com"
     });
 
     await mailer.verify();
