@@ -58,22 +58,47 @@ function fmtDateTime(d: Date | null): string {
     });
 }
 
-/** Provider comment: the message of the last note attached to the ticket, or '' if none. */
-async function readLastNote(ticket: SpinalNode): Promise<string> {
-    try {
-        const notes = await ticket.getChildren('hasNotes');
-        if (!notes || notes.length === 0) return '';
-        const note: any = notes[notes.length - 1];
-        const element: any = await note.element.load();
-        const msg = element?.message?.get?.();
-        return msg == null ? '' : String(msg);
-    } catch (err) {
-        console.warn(`Failed to read note for a ticket: ${(err as Error).message}`);
-        return '';
-    }
+/** A note is the ticket's compte rendu (CR) when info.ticketCR is true; otherwise it's a comment. */
+function isCRNote(note: SpinalNode): boolean {
+    return (note as any).info?.ticketCR?.get?.() == true;
 }
 
-/** Resolve one ticket into the 7 columns of the "Liste des tickets" sheet. */
+function noteMessage(element: any): string {
+    const msg = element?.message?.get?.();
+    return msg == null ? '' : String(msg);
+}
+
+/**
+ * Provider notes: 'hasNotes' holds exactly one CR and one or many comments.
+ * - commentaire: the last synced comment. Newest comments land at the end of the
+ *   array; a comment whose element has no numeric sentDone isn't synced yet.
+ * - compteRendu: the CR message.
+ * Each is '' when missing.
+ */
+async function readNotes(ticket: SpinalNode): Promise<{ commentaire: string; compteRendu: string }> {
+    const result = { commentaire: '', compteRendu: '' };
+    try {
+        const notes = await ticket.getChildren('hasNotes');
+        if (!notes || notes.length === 0) return result;
+
+        const cr: any = notes.find(isCRNote);
+        if (cr) result.compteRendu = noteMessage(await cr.element.load());
+
+        const comments = notes.filter((n) => !isCRNote(n));
+        for (let i = comments.length - 1; i >= 0; i--) {
+            const element: any = await (comments[i] as any).element.load();
+            if (Number.isFinite(element?.sentDone?.get?.())) {
+                result.commentaire = noteMessage(element);
+                break;
+            }
+        }
+    } catch (err) {
+        console.warn(`Failed to read notes for a ticket: ${(err as Error).message}`);
+    }
+    return result;
+}
+
+/** Resolve one ticket into the 8 columns of the "Liste des tickets" sheet. */
 async function buildTicketRow(ref: TicketRef): Promise<CellValueOrEntry[]> {
     const { node, domaine, etape } = ref;
 
@@ -104,7 +129,7 @@ async function buildTicketRow(ref: TicketRef): Promise<CellValueOrEntry[]> {
         if (d && (!lastStatus || d.getTime() > lastStatus.getTime())) lastStatus = d;
     }
 
-    const commentaire = await readLastNote(node);
+    const { commentaire, compteRendu } = await readNotes(node);
 
     return [
         missionId ?? '',
@@ -114,13 +139,14 @@ async function buildTicketRow(ref: TicketRef): Promise<CellValueOrEntry[]> {
         fmtDateTime(creationDate),
         fmtDateTime(lastStatus),
         commentaire,
+        compteRendu,
     ];
 }
 
 /**
  * The filler only writes cell values, so multi-line columns won't wrap. Re-open
- * the saved file and enable wrap-text + top alignment on the Description (D) and
- * Commentaire (G) columns for the data rows. Safe here — the ticket template has
+ * the saved file and enable wrap-text + top alignment on the Description (D),
+ * Commentaire (G) and Compte rendu (H) columns for the data rows. Safe here — the ticket template has
  * no charts/images for ExcelJS to drop on re-save.
  */
 async function enableListWrap(filePath: string, dataRowCount: number): Promise<void> {
@@ -129,7 +155,7 @@ async function enableListWrap(filePath: string, dataRowCount: number): Promise<v
     await wb.xlsx.readFile(filePath);
     const ws = wb.getWorksheet(LIST_SHEET);
     if (!ws) return;
-    const WRAP_COLS = [4, 7]; // D = Description, G = Commentaire
+    const WRAP_COLS = [4, 7, 8]; // D = Description, G = Commentaire, H = Compte rendu
     for (let r = 2; r < 2 + dataRowCount; r++) {
         for (const c of WRAP_COLS) {
             const cell = ws.getCell(r, c);
